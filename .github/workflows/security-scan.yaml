@@ -1,0 +1,28 @@
+name: Scheduled Security Scan
+
+on:
+  schedule:
+    - cron: '0 2 * * 1'    # Every Monday 2am
+  workflow_dispatch:
+
+jobs:
+
+  secret-detection:
+    name: 🔑 Gitleaks Secret Scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  license-check:
+    name: ⚖️ License Compliance
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          pip install pip-licenses
+          pip-licenses --fail-on="GPL;LGPL" --with-system

@@ -1,0 +1,47 @@
+name: CD Pipeline
+
+on:
+  workflow_run:
+    workflows: ["CI Pipeline"]
+    branches: [main]
+    types: [completed]
+
+jobs:
+
+  deploy-staging:
+    name: 🟡 Deploy to Staging
+    runs-on: ubuntu-latest
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    environment: staging
+    steps:
+      - uses: actions/checkout@v4
+      - name: Deploy via Docker Compose
+        run: |
+          echo "Deploying book-ticketing-app to staging..."
+          docker compose -f docker-compose.yml up -d
+      - name: Health check
+        run: curl -f https://staging.booktickets.com/health || exit 1
+
+  dast:
+    name: 🔍 OWASP ZAP — DAST
+    runs-on: ubuntu-latest
+    needs: deploy-staging
+    steps:
+      - uses: zaproxy/action-baseline@v0.10.0
+        with:
+          target: 'https://staging.booktickets.com'
+          rules_file_name: '.zap/rules.tsv'
+          fail_action: warn
+
+  deploy-production:
+    name: 🟢 Deploy to Production
+    runs-on: ubuntu-latest
+    needs: dast
+    environment: production       # requires manual approval
+    steps:
+      - uses: actions/checkout@v4
+      - name: Deploy to production
+        run: |
+          echo "Deploying to production..."
+          docker compose -f docker-compose.yml up -d
+  
