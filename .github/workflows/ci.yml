@@ -109,7 +109,6 @@ jobs:
         env:
           SEMGREP_APP_TOKEN: ${{ secrets.SEMGREP_APP_TOKEN }}
 
-      # FIX: Upgraded codeql-action v3 → v4 (v3 deprecated December 2026)
       - name: Upload Semgrep results to GitHub Security tab
         uses: github/codeql-action/upload-sarif@v4
         if: always() && hashFiles('semgrep.sarif') != ''
@@ -131,7 +130,7 @@ jobs:
           python-version: '3.11'
 
       # FIX: Auto-sanitize requirements.txt before install.
-      #      Strips invalid trailing letters from versions e.g. httpx==0.27.0e → httpx==0.27.0
+      #      Strips invalid trailing letters e.g. httpx==0.27.0e → httpx==0.27.0
       - name: Sanitize requirements.txt
         run: |
           python3 -c "
@@ -150,7 +149,7 @@ jobs:
       - name: Install Python dependencies
         run: pip install -r requirements.txt
 
-      # FIX: Pass --package-manager=pip to bypass broken pyproject.toml/Poetry validation
+      # FIX: --package-manager=pip bypasses broken pyproject.toml/Poetry validation
       - name: Snyk vulnerability scan
         uses: snyk/actions/python@master
         continue-on-error: true
@@ -163,8 +162,7 @@ jobs:
             --package-manager=pip
             --sarif-file-output=snyk.sarif
 
-      # FIX: Guard upload — snyk.sarif only exists if Snyk ran successfully.
-      # FIX: Upgraded codeql-action v3 → v4 (v3 deprecated December 2026)
+      # FIX: Guard upload — snyk.sarif only exists if Snyk ran successfully
       - name: Upload Snyk results to GitHub Security tab
         uses: github/codeql-action/upload-sarif@v4
         if: always() && hashFiles('snyk.sarif') != ''
@@ -186,18 +184,24 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: docker/login-action@v3
+      # FIX: Normalize to lowercase — Docker registry names must be fully lowercase.
+      #      github.repository_owner can contain uppercase (e.g. DevSecOP-CICD-Pipeline)
+      - name: Set lowercase image ref
+        run: |
+          echo "IMAGE_REF=$(echo '${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:${{ github.sha }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # FIX: Pinned to v6 (v5 has known cache issues)
       - uses: docker/build-push-action@v6
         with:
           context: .
           push: true
-          tags: ${{ env.REGISTRY }}/${{ github.repository }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+          tags: ${{ env.IMAGE_REF }}
 
   # ─────────────────────────────────────────────
   # 5. CONTAINER SCAN — Trivy
@@ -208,10 +212,16 @@ jobs:
     needs: build
     permissions:
       security-events: write
+      packages: read
     steps:
       - uses: actions/checkout@v4
 
-      # FIX: Login to GHCR so Trivy can pull the private image built in the build job
+      # FIX: Normalize to lowercase — must match exactly what was pushed in build job
+      - name: Set lowercase image ref
+        run: |
+          echo "IMAGE_REF=$(echo '${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:${{ github.sha }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
+
+      # FIX: Login before pull so docker can authenticate with GHCR
       - name: Login to GHCR
         uses: docker/login-action@v3
         with:
@@ -219,22 +229,25 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # FIX: Upgraded trivy-action from 0.30.0 to 0.35.0 (latest).
-      #      Releases v0.27.0–v0.69.1 of Trivy were deleted after a security
-      #      incident on 2026-03-01, so trivy-action@0.30.0 can no longer
-      #      download its binary (v0.60.0). Use 0.35.0 which pulls v0.69.3 — 
-      #      the current safe, stable release.
+      # FIX: Pull image into local Docker daemon BEFORE trivy-action runs.
+      #      trivy-action's entrypoint.sh does NOT inherit docker login credentials.
+      #      Pulling first puts the image in the local daemon so Trivy finds it
+      #      via the "docker" source without needing remote auth.
+      - name: Pull image from GHCR
+        run: docker pull ${{ env.IMAGE_REF }}
+
+      # Trivy v0.69.3 — safe post-incident release (v0.27–v0.69.1 were deleted
+      # in the 2026-03-01 supply chain attack on the Trivy GitHub repo)
       - name: Run Trivy
         uses: aquasecurity/trivy-action@0.35.0
         with:
-          image-ref: ${{ env.REGISTRY }}/${{ github.repository }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+          image-ref: ${{ env.IMAGE_REF }}
           format: sarif
           output: trivy-results.sarif
           severity: CRITICAL,HIGH
           exit-code: '0'
 
-      # FIX: Guard upload with hashFiles so missing SARIF never causes a path error
-      # FIX: Upgraded codeql-action v3 → v4 (v3 deprecated December 2026)
+      # FIX: Guard upload — trivy-results.sarif only exists if Trivy ran successfully
       - name: Upload Trivy results
         uses: github/codeql-action/upload-sarif@v4
         if: always() && hashFiles('trivy-results.sarif') != ''
@@ -251,7 +264,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0                     # Required for blame & new-code analysis
+          fetch-depth: 0
 
       # FIX: Replaced deprecated sonarcloud-github-action@master
       #      with sonarqube-scan-action@v5.0.0
